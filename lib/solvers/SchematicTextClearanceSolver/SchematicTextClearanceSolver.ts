@@ -1,5 +1,4 @@
 import { BaseSolver } from "@tscircuit/solver-utils"
-import type { SchematicText } from "circuit-json"
 import type {
   SchematicPlacementIssue,
   SchematicTextCollision,
@@ -10,6 +9,8 @@ import { centeredRect } from "../../utils/geometry"
 import { getSchematicSheetNamesById } from "../../utils/schematic-sheets"
 import {
   getSchematicTextPolygons,
+  getComponentSymbolTexts,
+  type ComponentSymbolText,
   polygonBounds,
   polygonsOverlap,
   rectPolygon,
@@ -28,7 +29,8 @@ interface Obstacle {
 }
 
 interface TextGeometry extends Obstacle {
-  text: SchematicText
+  text: ComponentSymbolText
+  isComponentLabel: boolean
   isTraceLabel: boolean
 }
 
@@ -57,13 +59,11 @@ export class SchematicTextClearanceSolver extends BaseSolver {
       ),
     )
     const seenText = new Set<string>()
-    this.texts = ctx.circuitJson.flatMap((element) => {
+    this.texts = [
+      ...ctx.circuitJson,
+      ...getComponentSymbolTexts(ctx.circuitJson),
+    ].flatMap((element) => {
       if (element.type !== "schematic_text") return []
-      // Reference/value labels move with their component. Trace-generated
-      // labels still need collision detection, even though they cannot be
-      // repositioned independently of their owning trace.
-      if (element.schematic_component_id || element.schematic_symbol_id)
-        return []
       const polygons = getSchematicTextPolygons(element)
       if (!polygons.length) return []
       const sheetId = element.schematic_sheet_id
@@ -84,6 +84,9 @@ export class SchematicTextClearanceSolver extends BaseSolver {
       return [
         {
           text: element,
+          isComponentLabel: Boolean(
+            element.schematic_component_id || element.schematic_symbol_id,
+          ),
           isTraceLabel: Boolean(
             "source_trace_id" in element && element.source_trace_id,
           ),
@@ -91,7 +94,7 @@ export class SchematicTextClearanceSolver extends BaseSolver {
           sheetId,
           object: {
             type: "text" as const,
-            id: element.schematic_text_id,
+            id: element.schematic_text_id ?? element.schematic_component_id!,
             text: element.text,
           },
         },
@@ -118,6 +121,31 @@ export class SchematicTextClearanceSolver extends BaseSolver {
             ]
           : [],
       ),
+      ...ctx.circuitJson.flatMap((element) => {
+        // Component-owned lines are symbol artwork, not section dividers.
+        if (
+          element.type !== "schematic_line" ||
+          element.schematic_component_id ||
+          element.schematic_symbol_id
+        )
+          return []
+        const from = { x: element.x1, y: element.y1 }
+        const to = { x: element.x2, y: element.y2 }
+        const polygon = traceSegmentPolygon(from, to)
+        return polygon
+          ? [
+              {
+                object: {
+                  type: "line" as const,
+                  id: element.schematic_line_id,
+                },
+                sheetId: element.schematic_sheet_id,
+                segments: [{ from, to }],
+                polygons: [polygon],
+              },
+            ]
+          : []
+      }),
       ...ctx.circuitJson.flatMap((element) =>
         element.type === "schematic_trace"
           ? [
@@ -142,12 +170,16 @@ export class SchematicTextClearanceSolver extends BaseSolver {
 
   override _step(): void {
     const text = this.texts[this.index]!
-    const targets = [...this.obstacles, ...this.texts.slice(this.index + 1)]
+    const targets = [
+      ...this.obstacles,
+      ...this.texts.slice(this.index + 1).filter((t) => !t.isComponentLabel),
+    ]
     const collisions = targets.filter((target) => this.collides(text, target))
     if (collisions.length) {
-      const suggestedMove = text.isTraceLabel
-        ? undefined
-        : this.findClearPosition(text)
+      const suggestedMove =
+        text.isTraceLabel || text.isComponentLabel
+          ? undefined
+          : this.findClearPosition(text)
       for (const target of collisions) {
         const targetName = target.object.componentName ?? target.object.text
         this.params.issues.push({
@@ -157,15 +189,18 @@ export class SchematicTextClearanceSolver extends BaseSolver {
             ? this.sheetNames.get(text.sheetId)
             : undefined,
           schematicTextId: text.text.schematic_text_id,
+          schematicComponentId: text.text.schematic_component_id,
           text: text.text.text,
           collidingObject: target.object,
           textBounds: polygonBounds(text.polygons),
           collidingObjectBounds: polygonBounds(target.polygons),
           suggestedMove,
           message: `Text "${text.text.text}" overlaps ${target.object.type}${targetName ? ` ${targetName}` : ""}; ${
-            text.isTraceLabel
-              ? "adjust the owning trace's label placement or remove stale duplicates to leave the visible text area clear."
-              : "reposition the text to leave its visible area clear."
+            text.isComponentLabel
+              ? "adjust the owning component or section divider to leave the visible text area clear."
+              : text.isTraceLabel
+                ? "adjust the owning trace's label placement or remove stale duplicates to leave the visible text area clear."
+                : "reposition the text to leave its visible area clear."
           }`,
         })
       }
@@ -176,6 +211,9 @@ export class SchematicTextClearanceSolver extends BaseSolver {
 
   private collides(text: TextGeometry, obstacle: Obstacle): boolean {
     if (text.sheetId !== obstacle.sheetId) return false
+    // Reference/value labels move with their component. Check their divider
+    // crossings without treating the component's own body or wires as obstacles.
+    if (text.isComponentLabel && obstacle.object.type !== "line") return false
     return text.polygons.some((a) =>
       obstacle.segments
         ? obstacle.segments.some((edge) =>
@@ -190,7 +228,7 @@ export class SchematicTextClearanceSolver extends BaseSolver {
   ): SchematicTextCollision["suggestedMove"] {
     const obstacles = [
       ...this.obstacles,
-      ...this.texts.filter((t) => t !== text),
+      ...this.texts.filter((t) => t !== text && !t.isComponentLabel),
     ]
     const step = Math.max(0.1, text.text.font_size / 2)
     for (
