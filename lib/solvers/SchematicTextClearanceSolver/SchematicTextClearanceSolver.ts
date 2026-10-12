@@ -1,5 +1,5 @@
 import { BaseSolver } from "@tscircuit/solver-utils"
-import type { SchematicText } from "circuit-json"
+import type { SchematicComponent, SchematicText } from "circuit-json"
 import type {
   SchematicPlacementIssue,
   SchematicTextCollision,
@@ -11,7 +11,7 @@ import { getSchematicSheetNamesById } from "../../utils/schematic-sheets"
 import {
   getSchematicTextPolygons,
   getComponentSymbolTexts,
-  type ComponentSymbolText,
+  type SchematicTextLayout,
   polygonBounds,
   polygonsOverlap,
   rectPolygon,
@@ -30,7 +30,8 @@ interface Obstacle {
 }
 
 interface TextGeometry extends Obstacle {
-  text: SchematicText | ComponentSymbolText
+  source: SchematicText | SchematicComponent
+  text: SchematicTextLayout
   isComponentLabel: boolean
   isTraceLabel: boolean
 }
@@ -61,42 +62,56 @@ export class SchematicTextClearanceSolver extends BaseSolver {
     )
     const seenText = new Set<string>()
     this.texts = [
-      ...ctx.circuitJson,
-      ...getComponentSymbolTexts(ctx.circuitJson),
-    ].flatMap((element) => {
-      if (element.type !== "schematic_text") return []
-      const polygons = getSchematicTextPolygons(element)
+      ...ctx.circuitJson.flatMap((element) =>
+        element.type === "schematic_text"
+          ? [{ source: element, text: element }]
+          : [],
+      ),
+      ...getComponentSymbolTexts(ctx.circuitJson).map(
+        ({ component, layout }) => ({
+          source: component,
+          text: layout,
+        }),
+      ),
+    ].flatMap(({ source, text }) => {
+      const polygons = getSchematicTextPolygons(text)
       if (!polygons.length) return []
-      const sheetId = element.schematic_sheet_id
+      const sheetId = source.schematic_sheet_id
       // Some exports emit the same trace label twice. Identical overprinting
       // does not obscure another annotation and should not duplicate warnings.
       const fingerprint = JSON.stringify([
         sheetId,
-        element.text,
-        element.position.x,
-        element.position.y,
-        element.font_size,
-        element.anchor,
-        element.rotation,
-        element.color,
+        text.text,
+        text.position.x,
+        text.position.y,
+        text.font_size,
+        text.anchor,
+        text.rotation,
+        text.color,
       ])
       if (seenText.has(fingerprint)) return []
       seenText.add(fingerprint)
       return [
         {
-          text: element,
-          isComponentLabel: Boolean(
-            element.schematic_component_id || element.schematic_symbol_id,
-          ),
+          source,
+          text,
+          isComponentLabel:
+            source.type === "schematic_component" ||
+            Boolean(
+              source.schematic_component_id || source.schematic_symbol_id,
+            ),
           isTraceLabel: Boolean(
-            "source_trace_id" in element && element.source_trace_id,
+            source.type === "schematic_text" && source.source_trace_id,
           ),
           polygons,
           sheetId,
           object: {
             type: "text" as const,
-            id: element.schematic_text_id ?? element.schematic_component_id!,
-            text: element.text,
+            id:
+              source.type === "schematic_text"
+                ? source.schematic_text_id
+                : source.schematic_component_id,
+            text: text.text,
           },
         },
       ]
@@ -189,8 +204,11 @@ export class SchematicTextClearanceSolver extends BaseSolver {
           schematicSheetName: text.sheetId
             ? this.sheetNames.get(text.sheetId)
             : undefined,
-          schematicTextId: text.text.schematic_text_id,
-          schematicComponentId: text.text.schematic_component_id,
+          schematicTextId:
+            text.source.type === "schematic_text"
+              ? text.source.schematic_text_id
+              : undefined,
+          schematicComponentId: text.source.schematic_component_id,
           text: text.text.text,
           collidingObject: target.object,
           textBounds: polygonBounds(text.polygons),

@@ -1,4 +1,8 @@
-import type { CircuitJson, SchematicText } from "circuit-json"
+import type {
+  CircuitJson,
+  SchematicComponent,
+  SchematicText,
+} from "circuit-json"
 import { symbols } from "schematic-symbols"
 import type { RectBounds } from "./geometry"
 
@@ -8,6 +12,11 @@ export interface Point {
 }
 
 export type Polygon = Point[]
+
+export type SchematicTextLayout = Pick<
+  SchematicText,
+  "text" | "font_size" | "rotation" | "position" | "anchor" | "color"
+>
 
 export const rectPolygon = (bounds: RectBounds): Polygon => [
   { x: bounds.left, y: bounds.bottom },
@@ -36,12 +45,7 @@ const widthInEm = (text: string): number =>
 export const getSchematicTextWidth = (text: string, fontSize: number): number =>
   widthInEm(text) * fontSize
 
-export function getSchematicTextPolygons(
-  text: Pick<
-    SchematicText,
-    "text" | "font_size" | "rotation" | "position" | "anchor"
-  >,
-): Polygon[] {
+export function getSchematicTextPolygons(text: SchematicTextLayout): Polygon[] {
   const size = text.font_size
   if (
     !Number.isFinite(size) ||
@@ -172,11 +176,10 @@ export const polygonBounds = (polygons: Polygon[]): RectBounds => {
   }
 }
 
-// Symbol primitives have no schematic_text record or ID in Circuit JSON.
-export interface ComponentSymbolText
-  extends Omit<SchematicText, "schematic_text_id"> {
-  schematic_text_id?: never
-  schematic_component_id: string
+// Symbol text is rendered from a component, not a standalone schematic_text.
+export interface ComponentSymbolText {
+  component: SchematicComponent
+  layout: SchematicTextLayout
 }
 
 export function getComponentSymbolTexts(
@@ -254,22 +257,22 @@ export function getComponentSymbolTexts(
       if (!text) return []
       return [
         {
-          type: "schematic_text",
-          schematic_component_id: component.schematic_component_id,
-          schematic_sheet_id: component.schematic_sheet_id,
-          text,
-          position: {
-            x: second.real.x + scale * (primitive.x - second.symbol.x),
-            y: second.real.y + scale * (primitive.y - second.symbol.y),
+          component,
+          layout: {
+            text,
+            position: {
+              x: second.real.x + scale * (primitive.x - second.symbol.x),
+              y: second.real.y + scale * (primitive.y - second.symbol.y),
+            },
+            anchor: primitive.anchor.replace(
+              "middle_",
+              "",
+            ) as SchematicText["anchor"],
+            // circuit-to-svg uses a fixed 0.18-unit font, even for scaled symbols.
+            font_size: 0.18,
+            rotation: 0,
+            color: "#000000",
           },
-          anchor: primitive.anchor.replace(
-            "middle_",
-            "",
-          ) as SchematicText["anchor"],
-          // circuit-to-svg uses a fixed 0.18-unit font, even for scaled symbols.
-          font_size: 0.18,
-          rotation: 0,
-          color: "#000000",
         },
       ]
     })
