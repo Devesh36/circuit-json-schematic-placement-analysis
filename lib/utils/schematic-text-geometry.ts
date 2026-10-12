@@ -36,7 +36,12 @@ const widthInEm = (text: string): number =>
 export const getSchematicTextWidth = (text: string, fontSize: number): number =>
   widthInEm(text) * fontSize
 
-export function getSchematicTextPolygons(text: ComponentSymbolText): Polygon[] {
+export function getSchematicTextPolygons(
+  text: Pick<
+    SchematicText,
+    "text" | "font_size" | "rotation" | "position" | "anchor"
+  >,
+): Polygon[] {
   const size = text.font_size
   if (
     !Number.isFinite(size) ||
@@ -168,8 +173,10 @@ export const polygonBounds = (polygons: Polygon[]): RectBounds => {
 }
 
 // Symbol primitives have no schematic_text record or ID in Circuit JSON.
-export type ComponentSymbolText = Omit<SchematicText, "schematic_text_id"> & {
-  schematic_text_id?: string
+export interface ComponentSymbolText
+  extends Omit<SchematicText, "schematic_text_id"> {
+  schematic_text_id?: never
+  schematic_component_id: string
 }
 
 export function getComponentSymbolTexts(

@@ -1,4 +1,5 @@
 import { BaseSolver } from "@tscircuit/solver-utils"
+import type { SchematicText } from "circuit-json"
 import type {
   SchematicPlacementIssue,
   SchematicTextCollision,
@@ -29,7 +30,7 @@ interface Obstacle {
 }
 
 interface TextGeometry extends Obstacle {
-  text: ComponentSymbolText
+  text: SchematicText | ComponentSymbolText
   isComponentLabel: boolean
   isTraceLabel: boolean
 }
